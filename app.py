@@ -1,40 +1,93 @@
 import streamlit as st
 import requests
-from config import API_KEY # استدعاء المفتاح من الملف المنفصل
+import sqlite3
+from textblob import TextBlob
+from datetime import datetime
+from config import API_KEY
  
-st.set_page_config(page_title="Weather App", layout="centered")
+# 1. Database Initialization
+def init_db():
+    conn = sqlite3.connect('weather_sentiment.db')
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS history 
+                 (city TEXT, temp REAL, description TEXT, user_text TEXT, sentiment REAL, date TEXT)''')
+    conn.commit()
+    conn.close()
  
-st.title("Streamlit Weather App – OpenWeatherMap Integration")
+init_db()
  
-# واجهة اختيار نوع البحث كما في الوصف الوظيفي
-search_mode = st.radio("Choose search mode:", ("City Name", "Latitude & Longitude"))
+# 2. UI Configuration
+st.set_page_config(page_title="Professional Weather App", layout="wide")
+st.title("Weather & Sentiment Analysis Tool 🌦️")
  
-params = {"appid": API_KEY, "units": "metric"} # ضبط الوحدات للنظام المتري (Celsius)
+# Sidebar for History
+st.sidebar.header("📜 Verlauf (History)")
  
-if search_mode == "City Name":
-    city = st.text_input("Enter city name (e.g., Berlin)")
-    if city: params["q"] = city
-else:
-    col1, col2 = st.columns(2)
-    with col1: lat = st.number_input("Latitude", format="%.4f")
-    with col2: lon = st.number_input("Longitude", format="%.4f")
-    params["lat"], params["lon"] = lat, lon
+# Input Section
+stadt = st.text_input("Geben Sie den Stadtnamen ein (z.B. Leipzig):")
  
-if st.button("Fetch Weather Data"):
+if st.button("Wetterdaten abrufen"):
+    params = {"q": stadt, "appid": API_KEY, "units": "metric", "lang": "de"}
     try:
-        # جلب البيانات بالإنجليزية والألمانية كما هو مطلوب
-        res_en = requests.get("https://api.openweathermap.org/data/2.5/weather", params={**params, "lang": "en"}).json()
-        res_de = requests.get("https://api.openweathermap.org/data/2.5/weather", params={**params, "lang": "de"}).json()
- 
-        if res_en.get("cod") == 200:
-            st.success(f"Location: {res_en['name']}") # عرض اسم الموقع
-            st.metric("Temperature", f"{res_en['main']['temp']} °C") # عرض الحرارة بالسليزيوس
-            
-            # عرض الوصف باللغتين
-            st.write(f"**Description (EN):** {res_en['weather'][0]['description']}")
-            st.write(f"**Description (DE):** {res_de['weather'][0]['description']}")
+        res = requests.get("https://api.openweathermap.org/data/2.5/weather", params=params).json()
+        if res.get("cod") == 200:
+            # Save weather data to session state
+            st.session_state['current_weather'] = res
         else:
-            st.error(f"Error: {res_en.get('message')}")
+            st.error(f"Fehler: {res.get('message')}")
     except Exception as e:
-        st.error(f"Connection error: {e}")
+        st.error(f"Verbindungsfehler: {e}")
+ 
+# 3. Sentiment Analysis Section (This will appear ONLY after weather data is fetched)
+if 'current_weather' in st.session_state:
+    weather = st.session_state['current_weather']
+    
+    # Display Results
+    st.success(f"Standort gefunden: {weather['name']}")
+    st.metric("Temperatur", f"{weather['main']['temp']} °C")
+    st.write(f"**Zustand:** {weather['weather'][0]['description']}")
+    
+    st.divider() # Visual separator
+    
+    # --- USER SENTIMENT INPUT AREA ---
+    st.subheader("💬 Ihr Kommentar zum Wetter")
+    user_text = st.text_area("Wie fühlen Sie sich bei diesem Wetter?", placeholder="Schreiben Sie hier...")
+    
+    if st.button("Feedback speichern"):
+        if user_text:
+            # Sentiment Analysis using TextBlob
+            blob = TextBlob(user_text)
+            score = blob.sentiment.polarity
+            
+            # Classification
+            if score > 0: status = "Positiv 😊"
+            elif score < 0: status = "Negativ ☹️"
+            else: status = "Neutral 😐"
+            
+            st.info(f"Analyse: Ihr Feedback ist {status} (Score: {score})")
+            
+            # Save to SQLite Database
+            conn = sqlite3.connect('weather_sentiment.db')
+            c = conn.cursor()
+            c.execute("INSERT INTO history VALUES (?, ?, ?, ?, ?, ?)", 
+                      (weather['name'], 
+                       weather['main']['temp'], 
+                       weather['weather'][0]['description'], 
+                       user_text, score, datetime.now().strftime("%Y-%m-%d %H:%M")))
+            conn.commit()
+            conn.close()
+            st.success("Daten erfolgreich gespeichert!")
+        else:
+            st.warning("Bitte geben Sie zuerst einen Text ein.")
+ 
+# 4. Display History in Sidebar
+try:
+    conn = sqlite3.connect('weather_sentiment.db')
+    history_data = conn.execute("SELECT * FROM history ORDER BY date DESC LIMIT 5").fetchall()
+    for entry in history_data:
+        st.sidebar.write(f"**{entry[0]}**: {entry[1]}°C")
+        st.sidebar.caption(f"Gefühl: {entry[3]}")
+    conn.close()
+except:
+    pass
  
